@@ -11,7 +11,6 @@ from shapely.geometry import LineString
 from pyproj import Geod
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 from cachetools import LRUCache
 from functools import lru_cache
 
@@ -213,20 +212,19 @@ class MapApp(QWidget):
                             color = 'red'
                         return {'color': color, 'weight': 5, 'opacity': 0.8}
 
-                    def tooltip_function(feature):
+                    def popup_function(feature):
                         speed = feature['properties']['speed']
                         limit = feature['properties']['speed_limit']
-                        diff = feature['properties']['speed_difference']
-                        return folium.Tooltip(
+                        return folium.Popup(
                             f"Prędkość: {speed:.1f} km/h<br>"
-                            f"Limit: {limit} km/h<br>"
-                            f"Przekroczenie: {diff:.1f} km/h"
+                            f"Limit: {limit} km/h",
+                            max_width=300
                         )
 
                     folium.GeoJson(
                         segments_gdf,
                         style_function=style_function,
-                        tooltip=tooltip_function
+                        popup=popup_function
                     ).add_to(self.map)
 
                     bounds = segments_gdf.total_bounds
