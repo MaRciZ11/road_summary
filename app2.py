@@ -7,15 +7,11 @@ from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtGui import QFont
 import folium
 import geopandas as gpd
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString
 from pyproj import Geod
-import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
+import aiohttp
+import asyncio
 from cachetools import LRUCache
-from functools import lru_cache
-import numpy as np
-from rtree import index
 
 class MapApp(QWidget):
     def __init__(self):
@@ -23,16 +19,15 @@ class MapApp(QWidget):
         self.setWindowTitle('KML Map Viewer with Speed Limits')
         self.resize(800, 600)
         self.speed_limit_cache = LRUCache(maxsize=1000)
-        self.spatial_index = None
-        self.road_segments = None
         self.setup_ui()
+        self.loop = asyncio.get_event_loop()
         
     def setup_ui(self):
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 
         self.button = QPushButton('Wczytaj plik KML')
-        self.button.clicked.connect(self.load_kml)
+        self.button.clicked.connect(lambda: self.loop.run_until_complete(self.load_kml()))
         self.layout.addWidget(self.button)
 
         self.progress_label = QLabel('Postęp:')
@@ -53,104 +48,127 @@ class MapApp(QWidget):
         self.web_view = QWebEngineView()
         self.layout.addWidget(self.web_view)
 
-    def create_spatial_index(self, segments):
-        idx = index.Index()
-        road_segments = []
-        
-        for i, segment in enumerate(segments):
-            idx.insert(i, segment.geometry.bounds)
-            road_segments.append(segment)
-            
-        return idx, road_segments
-
-    def batch_speed_limits_query(self, points, batch_size=50):
-        unique_points = list(set((round(p[1], 5), round(p[0], 5)) for p in points))
+    async def batch_speed_limits_query(self, points, batch_size=10):
+        unique_points = list(set((round(p.y, 6), round(p.x, 6)) for p in points))
         results = {}
+        overpass_url = "http://overpass-api.de/api/interpreter"
         
-        for i in range(0, len(unique_points), batch_size):
-            batch = unique_points[i:i + batch_size]
-            
-            query_areas = ');('.join(f'{lat},{lon},{lat},{lon}' for lat, lon in batch)
-            overpass_url = "http://overpass-api.de/api/interpreter"
-            
-            query = f"""
-            [out:json];
-            (
-                way(area:3600000000)(
-                    {query_areas}
-                )[highway][maxspeed];
-                way(area:3600000000)(
-                    {query_areas}
-                )[highway];
-            );
-            out body;
-            """
-            
-            try:
-                response = requests.post(overpass_url, data=query, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
+        # Definiujemy priorytety dla typów dróg
+        highway_priority = {
+            'motorway': 1,
+            'trunk': 2,
+            'primary': 3,
+            'secondary': 4,
+            'tertiary': 5,
+            'unclassified': 6,
+            'residential': 7,
+            'service': 8,
+            'living_street': 9,
+            'road': 10
+        }
+
+        async with aiohttp.ClientSession() as session:
+            for i in range(0, len(unique_points), batch_size):
+                batch = unique_points[i:i + batch_size]
+                
+                queries = []
+                for lat, lon in batch:
+                    # Filtrowanie dróg tylko do głównych typów
+                    queries.append(f"way(around:20,{lat},{lon})[highway~'^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$'];")
+                query = f"""
+                [out:json][timeout:25];
+                (
+                    {"".join(queries)}
+                );
+                out body center tags;
+                """
+                try:
+                    async with session.post(overpass_url, data={'data': query}, timeout=25) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            elements = data.get('elements', [])
+                            
+                            for lat, lon in batch:
+                                min_distance = None
+                                best_priority = None
+                                speed_limit = None
+                                for element in elements:
+                                    if element.get('type') == 'way' and 'highway' in element.get('tags', {}):
+                                        tags = element['tags']
+                                        highway_type = tags.get('highway')
+                                        if highway_type not in highway_priority:
+                                            continue  # Pomijamy nieznane typy dróg
+
+                                        if 'center' in element:
+                                            way_lat = element['center']['lat']
+                                            way_lon = element['center']['lon']
+                                            dist = ((lat - way_lat)**2 + (lon - way_lon)**2)
+                                            
+                                            current_priority = highway_priority[highway_type]
+                                            if (best_priority is None or current_priority < best_priority or
+                                                (current_priority == best_priority and (min_distance is None or dist < min_distance))):
+                                                min_distance = dist
+                                                best_priority = current_priority
+                                                speed_limit_candidate = self.extract_speed_limit(tags)
+                                                if speed_limit_candidate:
+                                                    speed_limit = speed_limit_candidate
+                                                else:
+                                                    speed_limit = self.get_default_speed_limit_by_highway_type(highway_type)
+                                if speed_limit:
+                                    results[(lat, lon)] = speed_limit
+                                else:
+                                    results[(lat, lon)] = self.get_default_speed_limit(lat, lon)
+                        else:
+                            print(f"Response status: {response.status}")
+                except Exception as e:
+                    print(f"Błąd zapytania batch: {e}")
                     
-                    for element in data.get('elements', []):
-                        if element.get('type') == 'way':
-                            tags = element.get('tags', {})
-                            speed_limit = self.extract_speed_limit(tags)
-                            if speed_limit:
-                                for lat, lon in batch:
-                                    if (lat, lon) not in results:
-                                        results[(lat, lon)] = speed_limit
-                
-            except Exception as e:
-                print(f"Błąd zapytania batch: {e}")
-                
-        for point in unique_points:
-            if point not in results:
-                results[point] = self.get_default_speed_limit(*point)
-                
         return results
 
     def extract_speed_limit(self, tags):
         if 'maxspeed' in tags:
+            speed_str = tags['maxspeed']
             try:
-                speed_str = tags['maxspeed'].split()[0]
-                return int(speed_str)
+                # Usuwamy wszelkie jednostki i dodatkowe teksty
+                speed_value = ''.join(filter(str.isdigit, speed_str))
+                if speed_value:
+                    return int(speed_value)
             except (ValueError, IndexError):
                 pass
-                
-        if 'highway' in tags:
-            highway_type = tags['highway']
-            default_limits = {
-                'motorway': 140,
-                'trunk': 120,
-                'primary': 90,
-                'secondary': 90,
-                'tertiary': 90,
-                'residential': 50,
-                'service': 30
-            }
-            return default_limits.get(highway_type)
-        
         return None
+
+    def get_default_speed_limit_by_highway_type(self, highway_type):
+        default_limits = {
+            'motorway': 140,
+            'trunk': 100,
+            'primary': 90,
+            'secondary': 90,
+            'tertiary': 90,
+            'unclassified': 70,
+            'residential': 50,
+            'living_street': 20,
+            'service': 30,
+            'road': 50
+        }
+        return default_limits.get(highway_type, 50)
 
     def get_default_speed_limit(self, lat, lon):
         default_speed = 50
-        cache_key = f"{lat:.5f},{lon:.5f}"
+        cache_key = f"{lat:.6f},{lon:.6f}"
         self.speed_limit_cache[cache_key] = default_speed
         return default_speed
 
-    def process_segments_batch(self, segments_batch):
+    async def process_segments_batch(self, segments_batch):
         mid_points = [segment['geometry'].interpolate(0.5, normalized=True) 
-                     for segment in segments_batch]
+                      for segment in segments_batch]
         
-        speed_limits = self.batch_speed_limits_query(
-            [(p.y, p.x) for p in mid_points]
-        )
+        speed_limits = await self.batch_speed_limits_query(mid_points)
         
         results = []
         for segment, mid_point in zip(segments_batch, mid_points):
             try:
                 speed_limit = speed_limits.get(
-                    (round(mid_point.y, 5), round(mid_point.x, 5)),
+                    (round(mid_point.y, 6), round(mid_point.x, 6)),
                     self.get_default_speed_limit(mid_point.y, mid_point.x)
                 )
                 
@@ -165,10 +183,10 @@ class MapApp(QWidget):
                 
         return results
 
-    def load_kml(self):
+    async def load_kml(self):
         options = QFileDialog.Options()
         kml_file, _ = QFileDialog.getOpenFileName(self, "Wybierz plik KML", "", 
-                                                "Pliki KML (*.kml);;Wszystkie pliki (*)", options=options)
+                                                  "Pliki KML (*.kml);;Wszystkie pliki (*)", options=options)
         if kml_file:
             try:
                 self.button.setEnabled(False)
@@ -190,10 +208,10 @@ class MapApp(QWidget):
                     self.progress_bar.setMaximum(len(segments))
                     processed_segments = []
                     
-                    batch_size = 50
+                    batch_size = 10  # Mniejsza partia, aby uniknąć przeciążenia API
                     for i in range(0, len(segments), batch_size):
                         batch = segments[i:i + batch_size]
-                        results = self.process_segments_batch(batch)
+                        results = await self.process_segments_batch(batch)
                         processed_segments.extend(results)
                         self.progress_bar.setValue(len(processed_segments))
                         QApplication.processEvents()
@@ -240,10 +258,11 @@ class MapApp(QWidget):
         self.map = folium.Map(location=center, zoom_start=10)
 
         def style_function(feature):
-            speed_diff = feature['properties']['speed_difference']
-            if speed_diff <= 10:
+            speed = feature['properties']['speed']
+            speed_limit = feature['properties']['speed_limit']
+            if speed <= speed_limit:
                 color = 'green'
-            elif 10 < speed_diff <= 20:
+            elif speed <= speed_limit + 10:
                 color = 'orange'
             else:
                 color = 'red'
@@ -262,7 +281,9 @@ class MapApp(QWidget):
         folium.GeoJson(
             segments_gdf,
             style_function=style_function,
-            tooltip=tooltip_function
+            tooltip=tooltip_function,
+            highlight_function=lambda x: {'weight': 8, 'color': 'blue'},
+            popup=folium.GeoJsonPopup(fields=['speed', 'speed_limit'], aliases=['Prędkość:', 'Limit prędkości:'])
         ).add_to(self.map)
 
         bounds = segments_gdf.total_bounds
@@ -299,9 +320,9 @@ class MapApp(QWidget):
          border:2px solid grey;
          ">
          &nbsp;<b>Przekroczenie prędkości:</b><br>
-         &nbsp;<i style="background:green;color:green;">____</i>&nbsp; ≤ 10 km/h<br>
-         &nbsp;<i style="background:orange;color:orange;">____</i>&nbsp; 10-20 km/h<br>
-         &nbsp;<i style="background:red;color:red;">____</i>&nbsp; > 20 km/h
+         &nbsp;<i style="background:green;color:green;">____</i>&nbsp; Prędkość ≤ Limit<br>
+         &nbsp;<i style="background:orange;color:orange;">____</i>&nbsp; Prędkość ≤ Limit + 10 km/h<br>
+         &nbsp;<i style="background:red;color:red;">____</i>&nbsp; Prędkość > Limit + 10 km/h
          </div>
          """
         self.map.get_root().html.add_child(folium.Element(legend_html))
