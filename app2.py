@@ -1,10 +1,10 @@
 import sys
 import os
-from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, 
-                            QFileDialog, QProgressBar, QLabel)
+from PyQt5.QtWidgets import (QApplication, QWidget, QGridLayout, QPushButton, 
+                             QFileDialog, QProgressBar, QLabel, QHBoxLayout, QMainWindow, QAction, QVBoxLayout, QListWidget, QListWidgetItem, QToolBar)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl, Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon, QPixmap
 import folium
 import geopandas as gpd
 from shapely.geometry import LineString
@@ -13,47 +13,93 @@ import aiohttp
 import asyncio
 from cachetools import LRUCache
 
-class MapApp(QWidget):
+class MapApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('KML Map Viewer with Speed Limits')
-        self.resize(800, 600)
+        self.setWindowTitle('Speed Limits')
+        self.resize(1024, 768)
         self.speed_limit_cache = LRUCache(maxsize=1000)
         self.setup_ui()
         self.loop = asyncio.get_event_loop()
+        self.maps_dir = 'maps'
+        if not os.path.exists(self.maps_dir):
+            os.makedirs(self.maps_dir)
+        self.map_files = {}  # Mapa plików KML do wygenerowanych map HTML
         
     def setup_ui(self):
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
-
-        self.button = QPushButton('Wczytaj plik KML')
-        self.button.clicked.connect(lambda: self.loop.run_until_complete(self.load_kml()))
-        self.layout.addWidget(self.button)
-
-        self.progress_label = QLabel('Postęp:')
-        self.progress_label.setVisible(False)
-        self.layout.addWidget(self.progress_label)
+        # Główny widget
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
         
+        # Główny układ
+        self.main_layout = QHBoxLayout()
+        self.central_widget.setLayout(self.main_layout)
+        
+        # Lewa strona: mapa
+        self.web_view = QWebEngineView()
+        self.main_layout.addWidget(self.web_view)
+        
+        # Prawa strona: panel boczny
+        self.side_panel = QWidget()
+        self.side_layout = QVBoxLayout()
+        self.side_panel.setLayout(self.side_layout)
+        self.main_layout.addWidget(self.side_panel)
+        
+        # Pasek narzędzi
+        self.toolbar = QToolBar("Main Toolbar")
+        self.addToolBar(self.toolbar)
+        
+        # Dodaj logo do paska narzędzi 
+        logo_action = QAction(QIcon('logo.png'), 'Logo', self)
+        self.toolbar.addAction(logo_action)
+        
+        # Akcja zamknięcia aplikacji
+        close_action = QAction('Zamknij', self)
+        close_action.triggered.connect(self.close)
+        self.toolbar.addAction(close_action)
+        
+        # Przycisk wczytywania pliku KML
+        self.load_button = QPushButton('Wczytaj plik KML')
+        self.load_button.setStyleSheet("padding: 10px; font-size: 16px;")
+        self.load_button.clicked.connect(lambda: self.loop.run_until_complete(self.load_kml()))
+        self.side_layout.addWidget(self.load_button)
+        
+        # Lista plików
+        self.file_list = QListWidget()
+        self.file_list.itemClicked.connect(self.load_map_from_list)
+        self.side_layout.addWidget(self.file_list)
+        
+        # Pasek postępu
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        self.layout.addWidget(self.progress_bar)
-
+        self.side_layout.addWidget(self.progress_bar)
+        
+        # Etykieta statusu
         self.status_label = QLabel('')
         self.status_label.setAlignment(Qt.AlignCenter)
         font = QFont()
         font.setPointSize(10)
         self.status_label.setFont(font)
-        self.layout.addWidget(self.status_label)
-
-        self.web_view = QWebEngineView()
-        self.layout.addWidget(self.web_view)
-
+        self.side_layout.addWidget(self.status_label)
+        
+        # Inicjalizacja mapy
+        self.initialize_map()
+        
+    def initialize_map(self):
+        # Centrowanie mapy na domyślnej lokalizacji
+        default_location = [52.2297, 21.0122]  # Warszawa, Polska
+        self.map = folium.Map(location=default_location, zoom_start=12)
+        self.add_responsive_css()
+        map_file = 'default_map.html'
+        self.map.save(map_file)
+        self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
+    
     async def batch_speed_limits_query(self, points, batch_size=10):
         unique_points = list(set((round(p.y, 6), round(p.x, 6)) for p in points))
         results = {}
         overpass_url = "http://overpass-api.de/api/interpreter"
         
-        # Definiujemy priorytety dla typów dróg
+        # Definiowanie priorytetów dla typów dróg
         highway_priority = {
             'motorway': 1,
             'trunk': 2,
@@ -73,7 +119,6 @@ class MapApp(QWidget):
                 
                 queries = []
                 for lat, lon in batch:
-                    # Filtrowanie dróg tylko do głównych typów
                     queries.append(f"way(around:20,{lat},{lon})[highway~'^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$'];")
                 query = f"""
                 [out:json][timeout:25];
@@ -97,7 +142,7 @@ class MapApp(QWidget):
                                         tags = element['tags']
                                         highway_type = tags.get('highway')
                                         if highway_type not in highway_priority:
-                                            continue  # Pomijamy nieznane typy dróg
+                                            continue
 
                                         if 'center' in element:
                                             way_lat = element['center']['lat']
@@ -129,7 +174,6 @@ class MapApp(QWidget):
         if 'maxspeed' in tags:
             speed_str = tags['maxspeed']
             try:
-                # Usuwamy wszelkie jednostki i dodatkowe teksty
                 speed_value = ''.join(filter(str.isdigit, speed_str))
                 if speed_value:
                     return int(speed_value)
@@ -188,10 +232,22 @@ class MapApp(QWidget):
         kml_file, _ = QFileDialog.getOpenFileName(self, "Wybierz plik KML", "", 
                                                   "Pliki KML (*.kml);;Wszystkie pliki (*)", options=options)
         if kml_file:
+            # Sprawdzenie, czy plik jest już na liście
+            for index in range(self.file_list.count()):
+                item = self.file_list.item(index)
+                if item.data(Qt.UserRole) == kml_file:
+                    # Plik jest już na liście
+                    self.status_label.setText(f"Plik {os.path.basename(kml_file)} jest już na liście.")
+                    return
             try:
-                self.button.setEnabled(False)
+                # Dodanie pliku do listy (wyświetlanie tylko nazwy pliku)
+                filename = os.path.basename(kml_file)
+                item = QListWidgetItem(filename)
+                item.setData(Qt.UserRole, kml_file)
+                self.file_list.addItem(item)
+                
+                self.load_button.setEnabled(False)
                 self.progress_bar.setVisible(True)
-                self.progress_label.setVisible(True)
                 self.status_label.setText("Wczytywanie pliku KML...")
                 
                 gdf = gpd.read_file(kml_file, driver='KML')
@@ -208,7 +264,7 @@ class MapApp(QWidget):
                     self.progress_bar.setMaximum(len(segments))
                     processed_segments = []
                     
-                    batch_size = 10  # Mniejsza partia, aby uniknąć przeciążenia API
+                    batch_size = 10
                     for i in range(0, len(segments), batch_size):
                         batch = segments[i:i + batch_size]
                         results = await self.process_segments_batch(batch)
@@ -216,7 +272,7 @@ class MapApp(QWidget):
                         self.progress_bar.setValue(len(processed_segments))
                         QApplication.processEvents()
 
-                    self.generate_map(processed_segments)
+                    self.generate_map(processed_segments, kml_file)
                     
                 else:
                     self.status_label.setText("Geometria w pliku KML nie jest typu LineString.")
@@ -224,13 +280,12 @@ class MapApp(QWidget):
             except Exception as e:
                 self.status_label.setText(f"Błąd: {str(e)}")
             finally:
-                self.button.setEnabled(True)
+                self.load_button.setEnabled(True)
                 self.progress_bar.setVisible(False)
-                self.progress_label.setVisible(False)
-
+    
     def prepare_segments(self, line):
         coords = list(line.coords)
-        time_per_segment = 1 / 360
+        time_per_segment = 1 / 360  # Zakładając 1 sekundę na segment
         geod = Geod(ellps='WGS84')
         
         segments = []
@@ -239,7 +294,7 @@ class MapApp(QWidget):
             end = coords[i + 1]
             
             azimuth1, azimuth2, distance = geod.inv(start[0], start[1], end[0], end[1])
-            speed = (distance / 1000) / time_per_segment
+            speed = (distance / 1000) / time_per_segment  # km/h
             
             segments.append({
                 'geometry': LineString([start, end]),
@@ -248,7 +303,7 @@ class MapApp(QWidget):
             
         return segments
 
-    def generate_map(self, processed_segments):
+    def generate_map(self, processed_segments, kml_filename):
         self.status_label.setText("Generowanie mapy...")
         
         segments_gdf = gpd.GeoDataFrame(processed_segments, crs="EPSG:4326")
@@ -292,12 +347,19 @@ class MapApp(QWidget):
         self.add_legend()
         self.add_responsive_css()
 
-        map_file = 'map.html'
+        # Generowanie unikalnej nazwy pliku mapy na podstawie nazwy pliku KML
+        map_filename = os.path.splitext(os.path.basename(kml_filename))[0] + '_map.html'
+        map_file = os.path.join(self.maps_dir, map_filename)
         self.map.save(map_file)
+        
+        # Zapisywanie mapy w słowniku
+        self.map_files[kml_filename] = map_file
+
+        # Ładowanie mapy w widoku web
         self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
         
         self.status_label.setText("Mapa została wygenerowana.")
-
+    
     def add_responsive_css(self):
         css = """
         <style>
@@ -326,6 +388,18 @@ class MapApp(QWidget):
          </div>
          """
         self.map.get_root().html.add_child(folium.Element(legend_html))
+
+    def load_map_from_list(self, item):
+        # Pobierz nazwę pliku KML powiązaną z tym elementem
+        kml_filename = item.data(Qt.UserRole)
+        # Pobierz plik mapy powiązany z tym plikiem KML
+        map_file = self.map_files.get(kml_filename)
+        if map_file and os.path.exists(map_file):
+            # Załaduj mapę do widoku web
+            self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
+            self.status_label.setText(f"Mapa dla pliku {os.path.basename(kml_filename)} została załadowana.")
+        else:
+            self.status_label.setText(f"Mapa dla pliku {os.path.basename(kml_filename)} nie jest dostępna.")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
