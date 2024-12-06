@@ -6,9 +6,9 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QPushButton,
                              QFileDialog, QProgressBar, QLabel, QHBoxLayout, 
                              QMainWindow, QAction, QVBoxLayout, QToolBar, QTreeWidget, QTreeWidgetItem, 
                              QLineEdit, QDialog, QDialogButtonBox, QComboBox, 
-                             QFormLayout, QMessageBox)
+                             QFormLayout, QMessageBox, QScrollArea, QFrame, QGridLayout, QStackedWidget)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QUrl, Qt, QMimeData, QPoint
+from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QPainterPath
 import folium
 import geopandas as gpd
@@ -21,7 +21,6 @@ from lxml import etree
 
 KML_NAMESPACE = "http://www.opengis.net/kml/2.2"
 NS = {"k": KML_NAMESPACE}
-
 
 def load_profiles(profiles_file):
     if not os.path.exists(profiles_file):
@@ -130,6 +129,7 @@ def add_extended_data_to_kml(original_kml_path, processed_segments):
     with open(original_kml_path, 'wb') as f:
         f.write(etree.tostring(tree, encoding='utf-8', xml_declaration=True))
 
+
 class ProfileDialog(QDialog):
     def __init__(self, profiles_data, parent=None):
         super().__init__(parent)
@@ -190,6 +190,7 @@ class ProfileDialog(QDialog):
             self.selected_profile = self.combo.currentText()
         self.accept()
 
+
 class DragDropTree(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -244,53 +245,91 @@ class DragDropTree(QTreeWidget):
                                         p["rides"].append(kml_file)
                             save_profiles(app.profiles_file, app.profiles_data)
 
+
 class MapApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Speed Limits')
         self.resize(1024, 768)
         self.speed_limit_cache = LRUCache(maxsize=1000)
-        self.setup_ui()
-        self.loop = asyncio.get_event_loop()
+        self.maps_dir = 'maps'
+        if not os.path.exists(self.maps_dir):
+            os.makedirs(self.maps_dir)
+        
+        self.profiles_file = 'profiles.json'
+        self.profiles_data = load_profiles(self.profiles_file)
+        self.map_files = {}
+
         self.maps_dir = 'maps'
         if not os.path.exists(self.maps_dir):
             os.makedirs(self.maps_dir)
 
-        self.profiles_file = 'profiles.json'
-        self.profiles_data = load_profiles(self.profiles_file)
-        self.map_files = {}
+        self.loop = asyncio.get_event_loop()
+
+        # StackedWidget do przełączania widoków
+        self.stacked = QStackedWidget()
+
+        # Widok przejazdów
+        self.rides_widget = QWidget()
+        self.setup_rides_ui(self.rides_widget)
+
+        # Widok profili
+        self.profiles_widget = QWidget()
+        self.setup_profiles_ui(self.profiles_widget)
+
+        # Dodajemy do stosu
+        self.stacked.addWidget(self.rides_widget)
+        self.stacked.addWidget(self.profiles_widget)
+
+        self.setCentralWidget(self.stacked)
+
+        self.create_toolbar()
+
+        # Domyślny widok: przejazdy
+        self.show_rides_view()
+
         self.build_profile_tree()
+        self.update_profiles_view()
 
-    def setup_ui(self):
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        
-        self.main_layout = QVBoxLayout()
-        self.central_widget.setLayout(self.main_layout)
-
-        # Górna część: mapa i panel
-        top_layout = QHBoxLayout()
-
-        self.web_view = QWebEngineView()
-        top_layout.addWidget(self.web_view)
-        
-        self.side_panel = QWidget()
-        self.side_layout = QVBoxLayout()
-        self.side_panel.setLayout(self.side_layout)
-        top_layout.addWidget(self.side_panel)
-
-        self.main_layout.addLayout(top_layout)
-        
+    def create_toolbar(self):
         self.toolbar = QToolBar("Main Toolbar")
         self.addToolBar(self.toolbar)
         
         logo_action = QAction(QIcon('logo.png'), 'Logo', self)
         self.toolbar.addAction(logo_action)
+
+        profile_action = QAction("Profile", self)
+        profile_action.triggered.connect(self.show_profiles_view)
+        self.toolbar.addAction(profile_action)
+
+        rides_action = QAction("Przejazdy", self)
+        rides_action.triggered.connect(self.show_rides_view)
+        self.toolbar.addAction(rides_action)
         
         close_action = QAction('Zamknij', self)
         close_action.triggered.connect(self.close)
         self.toolbar.addAction(close_action)
-        
+
+    def show_profiles_view(self):
+        self.stacked.setCurrentIndex(1)
+
+    def show_rides_view(self):
+        self.stacked.setCurrentIndex(0)
+
+    def setup_rides_ui(self, parent_widget):
+        layout = QVBoxLayout(parent_widget)
+        top_layout = QHBoxLayout()
+
+        self.web_view = QWebEngineView()
+        top_layout.addWidget(self.web_view)
+
+        self.side_panel = QWidget()
+        self.side_layout = QVBoxLayout()
+        self.side_panel.setLayout(self.side_layout)
+        top_layout.addWidget(self.side_panel)
+
+        layout.addLayout(top_layout)
+
         self.load_button = QPushButton('Wczytaj plik KML')
         self.load_button.setStyleSheet("padding: 10px; font-size: 16px;")
         self.load_button.clicked.connect(lambda: self.loop.run_until_complete(self.load_kml()))
@@ -307,15 +346,143 @@ class MapApp(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.side_layout.addWidget(self.progress_bar)
-        
+
         self.status_label = QLabel('')
         self.status_label.setAlignment(Qt.AlignCenter)
         font = QFont()
         font.setPointSize(10)
         self.status_label.setFont(font)
         self.side_layout.addWidget(self.status_label)
-        
+
         self.initialize_map()
+
+    def setup_profiles_ui(self, parent_widget):
+        layout = QVBoxLayout(parent_widget)
+
+        # Scrollable area with grid of profiles
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.profiles_container = QWidget()
+        self.profiles_layout = QGridLayout(self.profiles_container)
+        self.profiles_layout.setSpacing(20)
+        self.profiles_layout.setContentsMargins(20,20,20,20)
+        scroll.setWidget(self.profiles_container)
+        layout.addWidget(scroll)
+
+    def update_profiles_view(self):
+        # Usuwamy stare kafelki
+        for i in reversed(range(self.profiles_layout.count())):
+            widget = self.profiles_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        # Dodajemy kafelki dla każdego profilu
+        row = 0
+        col = 0
+        for p in self.profiles_data["profiles"]:
+            w = self.create_profile_card(p)
+            self.profiles_layout.addWidget(w, row, col)
+            col += 1
+            if col > 2:
+                col = 0
+                row += 1
+
+    def create_profile_card(self, profile):
+        # Wyliczamy statystyki: liczba przejazdów, ocena
+        num_rides = len(profile["rides"])
+        avg_penalty = self.calculate_profile_penalty(profile)
+        grade = self.penalty_to_grade(avg_penalty)
+
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        card_layout = QVBoxLayout(card)
+        card_layout.setAlignment(Qt.AlignCenter)
+
+        if profile["image"] and os.path.exists(profile["image"]):
+            pix = QPixmap(profile["image"])
+            size = 100
+            circle_pix = QPixmap(size, size)
+            circle_pix.fill(Qt.transparent)
+            painter = QPainter(circle_pix)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            path = QPainterPath()
+            path.addEllipse(0, 0, size, size)
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            painter.end()
+            icon_label = QLabel()
+            icon_label.setPixmap(circle_pix)
+            card_layout.addWidget(icon_label)
+
+        name_label = QLabel(profile["name"])
+        name_label.setAlignment(Qt.AlignCenter)
+        f = name_label.font()
+        f.setPointSize(12)
+        f.setBold(True)
+        name_label.setFont(f)
+        card_layout.addWidget(name_label)
+
+        rides_label = QLabel(f"Przejazdy: {num_rides}")
+        rides_label.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(rides_label)
+
+        if avg_penalty != 0:
+            grade_label = QLabel(f"Ocena: {grade}, Średnia kara: {avg_penalty:.2f}")
+        else:
+            grade_label = QLabel("Ocena: S, Brak kar")
+        grade_label.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(grade_label)
+
+        return card
+
+    def calculate_profile_penalty(self, profile):
+        # Przechodzimy przez wszystkie przejazdy profilu, zbieramy segmenty
+        total_segments = 0
+        total_penalty = 0
+        for ride in profile["rides"]:
+            if os.path.exists(ride):
+                segments = parse_segments_from_extended_data(ride)
+                for s in segments:
+                    if "speed_difference" in s:
+                        diff = s["speed_difference"]
+                        # 0 lub mniej = 0 pkt
+                        # 0 < diff <=10 = 1 pkt
+                        # diff >10 = 2 pkt
+                        if diff > 10:
+                            penalty = 6
+                        elif diff > 0:
+                            penalty = 2
+                        else:
+                            penalty = 0
+                        total_penalty += penalty
+                        total_segments += 1
+        if total_segments == 0:
+            return 0.0
+        return total_penalty / total_segments
+
+    def penalty_to_grade(self, avg_penalty):
+        # Skala:
+        # S: =0
+        # A: 0 < avg ≤0.2
+        # B: 0.2 < avg ≤0.4
+        # C: 0.4 < avg ≤0.6
+        # D: 0.6 < avg ≤0.8
+        # E: 0.8 < avg ≤1.0
+        # F: >1.0
+        if avg_penalty == 0:
+            return "S"
+        elif avg_penalty <= 0.2:
+            return "A"
+        elif avg_penalty <= 0.4:
+            return "B"
+        elif avg_penalty <= 0.6:
+            return "C"
+        elif avg_penalty <= 0.8:
+            return "D"
+        elif avg_penalty <= 1.0:
+            return "E"
+        else:
+            return "F"
 
     def initialize_map(self):
         default_location = [51.9194, 19.1451]
@@ -324,6 +491,108 @@ class MapApp(QMainWindow):
         map_file = 'default_map.html'
         self.map.save(map_file)
         self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
+
+    def add_responsive_css(self):
+        css = """
+        <style>
+            html, body, #map {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
+        </style>
+        """
+        self.map.get_root().html.add_child(folium.Element(css))
+
+    def add_legend(self):
+        legend_html = """
+         <div style="
+         position: fixed;
+         bottom: 50px; left: 50px; width: 200px; height: 90px;
+         background-color: white; z-index:9999; font-size:14px;
+         border:2px solid grey;
+         ">
+         &nbsp;<b>Przekroczenie prędkości:</b><br>
+         &nbsp;<i style="background:green;color:green;">____</i>&nbsp; ≤ Limit<br>
+         &nbsp;<i style="background:orange;color:orange;">____</i>&nbsp; ≤ Limit + 10 km/h<br>
+         &nbsp;<i style="background:red;color:red;">____</i>&nbsp; > Limit + 10 km/h
+         </div>
+         """
+        self.map.get_root().html.add_child(folium.Element(legend_html))
+
+    def build_profile_tree(self):
+        self.profile_tree.clear()
+        for p in self.profiles_data["profiles"]:
+            profile_item = QTreeWidgetItem([p["name"]])
+            if p["image"] and os.path.exists(p["image"]):
+                pix = QPixmap(p["image"])
+                size = min(pix.width(), pix.height())
+                circle_pix = QPixmap(size, size)
+                circle_pix.fill(Qt.transparent)
+                painter = QPainter(circle_pix)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                path = QPainterPath()
+                path.addEllipse(0, 0, size, size)
+                painter.setClipPath(path)
+                painter.drawPixmap(0, 0, pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                painter.end()
+                icon = QIcon(circle_pix)
+                profile_item.setIcon(0, icon)
+            self.profile_tree.addTopLevelItem(profile_item)
+            for ride in p["rides"]:
+                ride_item = QTreeWidgetItem([os.path.basename(ride)])
+                ride_item.setData(0, Qt.UserRole, ride)
+                profile_item.addChild(ride_item)
+        self.profile_tree.expandAll()
+        self.update_profiles_view()  # aktualizujemy widok profili
+
+    def tree_item_clicked(self, item, column):
+        # jeśli to child - przejazd
+        if item.parent() is not None:
+            kml_file = item.data(0, Qt.UserRole)
+            if kml_file and os.path.exists(kml_file):
+                processed_segments = parse_segments_from_extended_data(kml_file)
+                if not processed_segments:
+                    self.status_label.setText("Brak danych ExtendedData dla tego przejazdu.")
+                    return
+                self.generate_map(processed_segments, kml_file)
+
+    def remove_selected_items(self):
+        items = self.profile_tree.selectedItems()
+        if not items:
+            return
+
+        msg = QMessageBox.question(self, "Potwierdzenie",
+                                   "Czy na pewno chcesz usunąć zaznaczone elementy?",
+                                   QMessageBox.Yes | QMessageBox.No)
+        if msg != QMessageBox.Yes:
+            return
+
+        profiles_to_remove = []
+        rides_to_remove = []
+        for it in items:
+            parent = it.parent()
+            if parent is None:
+                profile_name = it.text(0)
+                profiles_to_remove.append(profile_name)
+            else:
+                kml_file = it.data(0, Qt.UserRole)
+                if kml_file:
+                    profile_name = parent.text(0)
+                    rides_to_remove.append((profile_name, kml_file))
+
+        if profiles_to_remove:
+            self.profiles_data["profiles"] = [p for p in self.profiles_data["profiles"] if p["name"] not in profiles_to_remove]
+
+        for (pr_name, kml) in rides_to_remove:
+            for p in self.profiles_data["profiles"]:
+                if p["name"] == pr_name:
+                    if kml in p["rides"]:
+                        p["rides"].remove(kml)
+
+        save_profiles(self.profiles_file, self.profiles_data)
+        self.build_profile_tree()
 
     async def batch_speed_limits_query(self, points, batch_size=10):
         unique_points = list(set((round(p.y, 6), round(p.x, 6)) for p in points))
@@ -609,120 +878,11 @@ class MapApp(QMainWindow):
         map_file = os.path.join(self.maps_dir, map_filename)
         self.map.save(map_file)
         
+        # map_files jest z poprzedniego kodu, zakładamy że działa
         self.map_files[kml_filename] = map_file
         self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
         
         self.status_label.setText("Mapa została wygenerowana.")
-
-    def add_responsive_css(self):
-        css = """
-        <style>
-            html, body, #map {
-                width: 100%;
-                height: 100%;
-                margin: 0;
-                padding: 0;
-            }
-        </style>
-        """
-        self.map.get_root().html.add_child(folium.Element(css))
-
-    def add_legend(self):
-        legend_html = """
-         <div style="
-         position: fixed;
-         bottom: 50px; left: 50px; width: 200px; height: 90px;
-         background-color: white; z-index:9999; font-size:14px;
-         border:2px solid grey;
-         ">
-         &nbsp;<b>Przekroczenie prędkości:</b><br>
-         &nbsp;<i style="background:green;color:green;">____</i>&nbsp; ≤ Limit<br>
-         &nbsp;<i style="background:orange;color:orange;">____</i>&nbsp; ≤ Limit + 10 km/h<br>
-         &nbsp;<i style="background:red;color:red;">____</i>&nbsp; > Limit + 10 km/h
-         </div>
-         """
-        self.map.get_root().html.add_child(folium.Element(legend_html))
-
-    def build_profile_tree(self):
-        self.profile_tree.clear()
-        for p in self.profiles_data["profiles"]:
-            profile_item = QTreeWidgetItem([p["name"]])
-            if p["image"] and os.path.exists(p["image"]):
-                pix = QPixmap(p["image"])
-                size = min(pix.width(), pix.height())
-                circle_pix = QPixmap(size, size)
-                circle_pix.fill(Qt.transparent)
-                painter = QPainter(circle_pix)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                path = QPainterPath()
-                path.addEllipse(0, 0, size, size)
-                painter.setClipPath(path)
-                painter.drawPixmap(0, 0, pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                painter.end()
-                icon = QIcon(circle_pix)
-                profile_item.setIcon(0, icon)
-            self.profile_tree.addTopLevelItem(profile_item)
-            for ride in p["rides"]:
-                ride_item = QTreeWidgetItem([os.path.basename(ride)])
-                ride_item.setData(0, Qt.UserRole, ride)
-                profile_item.addChild(ride_item)
-        self.profile_tree.expandAll()
-
-    def tree_item_clicked(self, item, column):
-        # kliknięto w nazwę
-        # jeśli to child - przejazd, wczytujemy mapę
-        if item.parent() is not None:
-            kml_file = item.data(0, Qt.UserRole)
-            if kml_file and os.path.exists(kml_file):
-                processed_segments = parse_segments_from_extended_data(kml_file)
-                if not processed_segments:
-                    self.status_label.setText("Brak danych ExtendedData dla tego przejazdu.")
-                    return
-                self.generate_map(processed_segments, kml_file)
-
-    def remove_selected_items(self):
-        items = self.profile_tree.selectedItems()
-        if not items:
-            return
-
-        msg = QMessageBox.question(self, "Potwierdzenie",
-                                   "Czy na pewno chcesz usunąć zaznaczone elementy?",
-                                   QMessageBox.Yes | QMessageBox.No)
-        if msg != QMessageBox.Yes:
-            return
-
-        # Usuwamy zaznaczone elementy
-        # Zaznaczone elementy mogą być profilami lub przejazdami
-        # Najpierw zbierzmy nazwy profili i pliki do usunięcia
-        profiles_to_remove = []
-        rides_to_remove = []  # list of tuples: (profile_name, kml_file)
-        for it in items:
-            parent = it.parent()
-            if parent is None:
-                # profil
-                profile_name = it.text(0)
-                profiles_to_remove.append(profile_name)
-            else:
-                # przejazd
-                kml_file = it.data(0, Qt.UserRole)
-                if kml_file:
-                    profile_name = parent.text(0)
-                    rides_to_remove.append((profile_name, kml_file))
-
-        # Usuwamy profile
-        if profiles_to_remove:
-            self.profiles_data["profiles"] = [p for p in self.profiles_data["profiles"] if p["name"] not in profiles_to_remove]
-
-        # Usuwamy przejazdy
-        for (pr_name, kml) in rides_to_remove:
-            # upewnijmy się, że profil nie został już usunięty
-            for p in self.profiles_data["profiles"]:
-                if p["name"] == pr_name:
-                    if kml in p["rides"]:
-                        p["rides"].remove(kml)
-
-        save_profiles(self.profiles_file, self.profiles_data)
-        self.build_profile_tree()
 
 
 if __name__ == '__main__':
