@@ -1,33 +1,22 @@
 {
   "profiles": [
     {
-      "name": "julia",
-      "image": "profile_photos/ac6fdcab-b27e-4a9f-9f8c-3865c0e5b55a.jpeg",
+      "name": "Ala",
+      "image": "profile_photos\\a9af5d1c-80a8-4c8e-b003-39c696bc0399.png",
       "rides": [
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/chorzow.kml",
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/zakopane_in.kml",
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/ojciec2.kml"
+        "C:/Users/marce/Documents/road_summary/road_summary/data/ojciec2.kml",
+        "C:/Users/marce/Documents/road_summary/road_summary/data/zakopane_in.kml",
+        "C:/Users/marce/Documents/road_summary/road_summary/data/makro.kml",
+        "C:/Users/marce/Documents/road_summary/road_summary/data/polibuda.kml",
+        "C:/Users/marce/Documents/road_summary/road_summary/data/miechowice_to_zabrze.kml"
       ]
     },
     {
-      "name": "tata",
-      "image": "",
+      "name": "Marcel",
+      "image": "profile_photos\\4b49887e-8af4-4661-9a08-1b0314745624.png",
       "rides": [
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/makro.kml"
-      ]
-    },
-    {
-      "name": "mama",
-      "image": "profile_photos/865ec497-1359-417e-93fc-7155579652f7.jpeg",
-      "rides": [
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/zabrze_to_makro.kml"
-      ]
-    },
-    {
-      "name": "andrzej",
-      "image": "profile_photos/16d0baa1-a9f0-4287-b50c-e2fa3704b38c.jpeg",
-      "rides": [
-        "/Users/marcelborczyk/Documents/Projekty Code/road_summary/data/sklepy.kml"
+        "C:/Users/marce/Documents/road_summary/road_summary/data/balice.kml",
+        "C:/Users/marce/Documents/road_summary/road_summary/data/urzad_bytom.kml"
       ]
     }
   ]

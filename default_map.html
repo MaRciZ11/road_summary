@@ -25,7 +25,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_62ba05a39191cda7d2b150e484e182b6 {
+                #map_fadd20f938025f7f93d12e884038816c {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -49,20 +49,23 @@
         </style>
         
     
-            <div class="folium-map" id="map_62ba05a39191cda7d2b150e484e182b6" ></div>
+            <div class="folium-map" id="map_fadd20f938025f7f93d12e884038816c" ></div>
         
 </body>
 <script>
     
     
-            var map_62ba05a39191cda7d2b150e484e182b6 = L.map(
-                "map_62ba05a39191cda7d2b150e484e182b6",
+            var map_fadd20f938025f7f93d12e884038816c = L.map(
+                "map_fadd20f938025f7f93d12e884038816c",
                 {
                     center: [51.9194, 19.1451],
                     crs: L.CRS.EPSG3857,
-                    zoom: 6,
-                    zoomControl: true,
-                    preferCanvas: false,
+                    ...{
+  "zoom": 6,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
                 }
             );
 
@@ -70,13 +73,24 @@
 
         
     
-            var tile_layer_217b0973e59ed0533a14bfa60686b2a0 = L.tileLayer(
+            var tile_layer_fb09dfe565a00fd766b5059678a32641 = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                {"attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors", "detectRetina": false, "maxNativeZoom": 19, "maxZoom": 19, "minZoom": 0, "noWrap": false, "opacity": 1, "subdomains": "abc", "tms": false}
+                {
+  "minZoom": 0,
+  "maxZoom": 19,
+  "maxNativeZoom": 19,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
             );
         
     
-            tile_layer_217b0973e59ed0533a14bfa60686b2a0.addTo(map_62ba05a39191cda7d2b150e484e182b6);
+            tile_layer_fb09dfe565a00fd766b5059678a32641.addTo(map_fadd20f938025f7f93d12e884038816c);
         
 </script>
 </html>

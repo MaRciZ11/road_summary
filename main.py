@@ -11,13 +11,19 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QPainterPath
 import folium
-import geopandas as gpd
+import geopandas as gpd, fiona
 from shapely.geometry import LineString
 from pyproj import Geod
 import aiohttp
 import asyncio
 from cachetools import LRUCache
 from lxml import etree
+
+os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+fiona.drvsupport.supported_drivers['kml'] = 'rw'
+fiona.drvsupport.supported_drivers['KML'] = 'rw'
+fiona.drvsupport.supported_drivers['libkml'] = 'rw'
+fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
 
 KML_NAMESPACE = "http://www.opengis.net/kml/2.2"
 NS = {"k": KML_NAMESPACE}
@@ -244,6 +250,7 @@ class DragDropTree(QTreeWidget):
                                     if kml_file not in p["rides"]:
                                         p["rides"].append(kml_file)
                             save_profiles(app.profiles_file, app.profiles_data)
+                            app.build_profile_tree()
 
 
 class MapApp(QMainWindow):
@@ -408,11 +415,16 @@ class MapApp(QMainWindow):
             path = QPainterPath()
             path.addEllipse(0, 0, size, size)
             painter.setClipPath(path)
-            painter.drawPixmap(0, 0, pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            scaled_pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            x_offset = (size - scaled_pix.width()) // 2
+            y_offset = (size - scaled_pix.height()) // 2
+            painter.drawPixmap(x_offset, y_offset, scaled_pix)
             painter.end()
             icon_label = QLabel()
+            icon_label.setFixedSize(size, size) 
+            icon_label.setAlignment(Qt.AlignCenter) 
             icon_label.setPixmap(circle_pix)
-            card_layout.addWidget(icon_label)
+            card_layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
         name_label = QLabel(profile["name"])
         name_label.setAlignment(Qt.AlignCenter)
@@ -436,7 +448,6 @@ class MapApp(QMainWindow):
         return card
 
     def calculate_profile_penalty(self, profile):
-        # Przechodzimy przez wszystkie przejazdy profilu, zbieramy segmenty
         total_segments = 0
         total_penalty = 0
         for ride in profile["rides"]:
@@ -446,8 +457,8 @@ class MapApp(QMainWindow):
                     if "speed_difference" in s:
                         diff = s["speed_difference"]
                         # 0 lub mniej = 0 pkt
-                        # 0 < diff <=10 = 1 pkt
-                        # diff >10 = 2 pkt
+                        # 0 < diff <=10 = 2 pkt
+                        # diff >10 = 6 pkt
                         if diff > 10:
                             penalty = 6
                         elif diff > 0:
@@ -527,25 +538,39 @@ class MapApp(QMainWindow):
             profile_item = QTreeWidgetItem([p["name"]])
             if p["image"] and os.path.exists(p["image"]):
                 pix = QPixmap(p["image"])
-                size = min(pix.width(), pix.height())
-                circle_pix = QPixmap(size, size)
+                target_size = 64
+                circle_pix = QPixmap(target_size, target_size)
                 circle_pix.fill(Qt.transparent)
+
                 painter = QPainter(circle_pix)
                 painter.setRenderHint(QPainter.Antialiasing, True)
+
                 path = QPainterPath()
-                path.addEllipse(0, 0, size, size)
+                path.addEllipse(0, 0, target_size, target_size)
                 painter.setClipPath(path)
-                painter.drawPixmap(0, 0, pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                scaled_pix = pix.scaled(
+                    target_size, target_size, 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                )
+                x_offset = (target_size - scaled_pix.width()) // 2
+                y_offset = (target_size - scaled_pix.height()) // 2
+                painter.drawPixmap(x_offset, y_offset, scaled_pix)
                 painter.end()
+
                 icon = QIcon(circle_pix)
                 profile_item.setIcon(0, icon)
+
             self.profile_tree.addTopLevelItem(profile_item)
+
             for ride in p["rides"]:
                 ride_item = QTreeWidgetItem([os.path.basename(ride)])
                 ride_item.setData(0, Qt.UserRole, ride)
                 profile_item.addChild(ride_item)
+
         self.profile_tree.expandAll()
-        self.update_profiles_view()  # aktualizujemy widok profili
+        self.update_profiles_view()
 
     def tree_item_clicked(self, item, column):
         # jeśli to child - przejazd
@@ -684,9 +709,9 @@ class MapApp(QMainWindow):
         default_limits = {
             'motorway': 140,
             'trunk': 100,
-            'primary': 90,
-            'secondary': 90,
-            'tertiary': 90,
+            'primary': 50,
+            'secondary': 50,
+            'tertiary': 50,
             'unclassified': 70,
             'residential': 50,
             'living_street': 20,
@@ -861,7 +886,6 @@ class MapApp(QMainWindow):
         folium.GeoJson(
             segments_gdf,
             style_function=style_function,
-            tooltip=tooltip_function,
             highlight_function=lambda x: {'weight': 8, 'color': 'blue'},
             popup=folium.GeoJsonPopup(fields=['speed', 'speed_limit'], aliases=['Prędkość:', 'Limit prędkości:'])
         ).add_to(self.map)
@@ -878,7 +902,6 @@ class MapApp(QMainWindow):
         map_file = os.path.join(self.maps_dir, map_filename)
         self.map.save(map_file)
         
-        # map_files jest z poprzedniego kodu, zakładamy że działa
         self.map_files[kml_filename] = map_file
         self.web_view.load(QUrl.fromLocalFile(os.path.abspath(map_file)))
         
